@@ -1,0 +1,6 @@
+streamlit
+python-dotenv
+langchain-core
+langchain-mcp-adapters
+langchain-google-genai
+google-generativeai
