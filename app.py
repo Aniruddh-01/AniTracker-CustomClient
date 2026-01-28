@@ -16,10 +16,15 @@ load_dotenv()
 # NOTE: If your server is running FastMCP, the URL is often just 
 # "https://anitracker.fastmcp.app/sse" or the root. 
 # Check your deployment logs to confirm the path.
+MCP_TOKEN = st.secrets.get("MCP_TOKEN") or os.getenv("MCP_TOKEN")
+
 SERVERS = {
     "expense": {
         "transport": "streamable_http",
         "url": "https://anitracker.fastmcp.app/mcp", 
+        "headers": {
+            "Authorization": f"Bearer {MCP_TOKEN}"
+        }
     }
 }
 
