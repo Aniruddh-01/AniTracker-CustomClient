@@ -52,7 +52,7 @@ def get_mcp_resources():
         
         # FIX: convert_system_message_to_human=True is required for Gemini
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-exp", 
+            model="gemini-2.5-flash", 
             google_api_key=GOOGLE_API_KEY,
             temperature=0,
             convert_system_message_to_human=True
