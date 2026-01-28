@@ -13,10 +13,12 @@ load_dotenv()
 # ─────────────────────────────
 # CONFIG
 # ─────────────────────────────
-# NOTE: If your server is running FastMCP, the URL is often just 
-# "https://anitracker.fastmcp.app/sse" or the root. 
-# Check your deployment logs to confirm the path.
+# 1. Pull the token from Streamlit Secrets (for Cloud) or .env (for Local)
 MCP_TOKEN = st.secrets.get("MCP_TOKEN") or os.getenv("MCP_TOKEN")
+
+if not MCP_TOKEN:
+    st.error("Missing MCP_TOKEN! Please add it to your Streamlit Secrets or .env file.")
+    st.stop()
 
 SERVERS = {
     "expense": {
@@ -31,15 +33,22 @@ SERVERS = {
 SYSTEM_PROMPT = "You are a helpful assistant with tool access. Be concise."
 
 # ─────────────────────────────
-# ROBUST ASYNC RUNNER
+# ROBUST ASYNC RUNNER (Python 3.13 Compatible)
 # ─────────────────────────────
 def run_sync(coro):
-    """Safely runs async code even if an event loop is already running."""
+    """
+    Safely runs async code in Streamlit's threaded environment.
+    Fixes: 'RuntimeError: There is no current event loop in thread'
+    """
     try:
-        return asyncio.run(coro)
-    except RuntimeError:
+        # Check if there is already a running loop in this thread
         loop = asyncio.get_event_loop()
-        return loop.run_until_complete(coro)
+    except RuntimeError:
+        # If not, create a new one and set it as the thread's loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    return loop.run_until_complete(coro)
 
 # ─────────────────────────────
 # INITIALIZATION (Cached)
@@ -49,18 +58,17 @@ def get_mcp_resources():
     """Connects to MCP and LLM once and persists them."""
     client = MultiServerMCPClient(SERVERS)
     try:
-        # Try to fetch tools
+        # Fetch available tools from the server
         tools = run_sync(client.get_tools())
         
-        # Using Gemini 2.0 (2.5 is not a valid model string yet)
+        # Initialize Gemini 2.0 Flash
         llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-exp", temperature=0)
         llm_with_tools = llm.bind_tools(tools)
         
         return client, tools, llm, llm_with_tools
     
     except Exception as e:
-        # --- ERROR UNWRAPPER ---
-        # This part looks inside the 'ExceptionGroup' to show you the REAL error
+        # Error unwrapper for ExceptionGroups (common in async)
         if hasattr(e, "exceptions"):
             for i, sub_e in enumerate(e.exceptions):
                 st.error(f"Root Cause {i+1}: {sub_e}")
@@ -81,11 +89,11 @@ if "history" not in st.session_state:
     st.session_state.history = [SystemMessage(content=SYSTEM_PROMPT)]
     st.session_state.tool_by_name = {t.name: t for t in tools}
 
-# Render history
+# Render chat history
 for msg in st.session_state.history:
     if isinstance(msg, HumanMessage):
         st.chat_message("user").write(msg.content)
-    elif isinstance(msg, AIMessage) and not msg.tool_calls:
+    elif isinstance(msg, AIMessage) and msg.content:
         st.chat_message("assistant").write(msg.content)
 
 # ─────────────────────────────
@@ -98,21 +106,24 @@ if user_text:
     st.session_state.history.append(HumanMessage(content=user_text))
 
     with st.spinner("Executing..."):
-        # 1. First Pass
+        # 1. LLM decides whether to use a tool
         response = run_sync(llm_with_tools.ainvoke(st.session_state.history))
         st.session_state.history.append(response)
 
+        # 2. If tool calls are requested, execute them
         if response.tool_calls:
             for tc in response.tool_calls:
                 tool = st.session_state.tool_by_name[tc["name"]]
-                # 2. Tool Pass
                 result = run_sync(tool.ainvoke(tc["args"]))
+                
+                # Append the result of the tool to history
                 st.session_state.history.append(
                     ToolMessage(tool_call_id=tc["id"], content=json.dumps(result))
                 )
             
-            # 3. Final Pass
+            # 3. Get the final response from LLM using the tool data
             response = run_sync(llm.ainvoke(st.session_state.history))
             st.session_state.history.append(response)
 
+        # Display assistant message
         st.chat_message("assistant").write(response.content)
