@@ -4,7 +4,7 @@ import asyncio
 import streamlit as st
 from dotenv import load_dotenv
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 
@@ -13,12 +13,11 @@ load_dotenv()
 # ─────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────
-# 1. Get secrets securely
 MCP_TOKEN = st.secrets.get("MCP_TOKEN") or os.getenv("MCP_TOKEN")
-GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
-if not MCP_TOKEN or not GOOGLE_API_KEY:
-    st.error("🚨 Missing Secrets! Please add `MCP_TOKEN` and `GOOGLE_API_KEY` to your Streamlit Secrets.")
+if not MCP_TOKEN or not OPENAI_API_KEY:
+    st.error("🚨 Missing Secrets! Please add `OPENAI_API_KEY` and `MCP_TOKEN` to your settings.")
     st.stop()
 
 SERVERS = {
@@ -29,13 +28,17 @@ SERVERS = {
     }
 }
 
-SYSTEM_PROMPT = "You are a helpful assistant with tool access. Be concise."
+# Added instruction to avoid JSON in the final output
+SYSTEM_PROMPT = (
+    "You are a helpful assistant with tool access. "
+    "When providing final answers after using a tool, always summarize the data "
+    "in a clear, human-readable textual format. Never show raw JSON to the user."
+)
 
 # ─────────────────────────────
-# SYNC RUNNER (Fixes Async Errors)
+# SYNC RUNNER
 # ─────────────────────────────
 def run_sync(coro):
-    """Safely runs async code in Streamlit's threaded environment."""
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -50,15 +53,12 @@ def run_sync(coro):
 def get_mcp_resources():
     client = MultiServerMCPClient(SERVERS)
     try:
-        # Check connection to MCP server
         tools = run_sync(client.get_tools())
         
-        # Use stable Gemini model
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash", 
-            google_api_key=GOOGLE_API_KEY,
-            temperature=0,
-            convert_system_message_to_human=True
+        llm = ChatOpenAI(
+            model="gpt-4o-mini", 
+            api_key=OPENAI_API_KEY,
+            temperature=0
         )
         llm_with_tools = llm.bind_tools(tools)
         
@@ -68,21 +68,20 @@ def get_mcp_resources():
         st.stop()
 
 st.set_page_config(page_title="AniTracker MCP", layout="centered")
-st.title("🧰 AniTracker — MCP Chat")
+st.title("🧰 AniTracker — OpenAI Edition")
 
-# Initialize Client
 client, tools, llm, llm_with_tools = get_mcp_resources()
 
-# Session State
 if "history" not in st.session_state:
     st.session_state.history = [SystemMessage(content=SYSTEM_PROMPT)]
     st.session_state.tool_by_name = {t.name: t for t in tools}
 
-# Render Chat
+# Render Chat History
 for msg in st.session_state.history:
     if isinstance(msg, HumanMessage):
         st.chat_message("user").write(msg.content)
     elif isinstance(msg, AIMessage) and msg.content:
+        # This ensures we only render the final text content, not the tool_calls metadata
         st.chat_message("assistant").write(msg.content)
 
 # ─────────────────────────────
@@ -94,27 +93,30 @@ if user_text:
     st.chat_message("user").write(user_text)
     st.session_state.history.append(HumanMessage(content=user_text))
 
-    with st.spinner("Executing..."):
+    with st.spinner("Processing..."):
         try:
-            # 1. First LLM Call
-            response = run_sync(llm_with_tools.ainvoke(st.session_state.history))
+            # Step 1: LLM decides if a tool is needed
+            response = llm_with_tools.invoke(st.session_state.history)
             st.session_state.history.append(response)
 
-            # 2. Tool Execution (if needed)
+            # Step 2: If tool calls exist, execute them and get a final text response
             if response.tool_calls:
                 for tc in response.tool_calls:
                     tool = st.session_state.tool_by_name.get(tc["name"])
                     if tool:
                         result = run_sync(tool.ainvoke(tc["args"]))
+                        # Add the raw tool output to history (not displayed to user)
                         st.session_state.history.append(
                             ToolMessage(tool_call_id=tc["id"], content=json.dumps(result))
                         )
                 
-                # 3. Final Answer
-                response = run_sync(llm.ainvoke(st.session_state.history))
-                st.session_state.history.append(response)
-
-            st.chat_message("assistant").write(response.content)
+                # Step 3: Final LLM call to turn JSON tool results into Text
+                final_response = llm.invoke(st.session_state.history)
+                st.session_state.history.append(final_response)
+                st.chat_message("assistant").write(final_response.content)
+            else:
+                # If no tool was needed, just print the direct response
+                st.chat_message("assistant").write(response.content)
 
         except Exception as e:
             st.error(f"⚠️ Error: {e}")
