@@ -23,7 +23,7 @@ if not MCP_TOKEN or not OPENAI_API_KEY:
 SERVERS = {
     "expense": {
         "transport": "streamable_http",
-        "url": "https://anitracker.fastmcp.app/mcp", 
+        "url": "https://aniruddh.fastmcp.app/mcp", 
         "headers": {"Authorization": f"Bearer {MCP_TOKEN}"}
     }
 }
